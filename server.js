@@ -199,9 +199,6 @@ app.post('/api/play-instant', async (req, res) => {
     won = (dir === 'up' && endVal > startVal) || (dir === 'down' && endVal < startVal);
     rewardMultiplier = won ? 2 : 0;
     resultMeta = { startVal, endVal };
-  } else if (game === 'careerboot') {
-    won = choice.won;
-    rewardMultiplier = choice.multiplier || 0;
   }
 
   const winPayout = won ? (numBet * rewardMultiplier) : 0;
@@ -214,6 +211,34 @@ app.post('/api/play-instant', async (req, res) => {
 
   const finalUser = await User.findOne({ username });
   res.json({ won, rewardMultiplier, newBalance: finalUser.balance, resultMeta });
+});
+
+// CareerBoot Bet Settlement Endpoint
+app.post('/api/careerboot/settle', async (req, res) => {
+  const { username, betAmount, won, netProfit } = req.body;
+  const numBet = parseFloat(betAmount);
+  const numProfit = parseFloat(netProfit || 0);
+
+  if (!numBet || numBet <= 0) return res.status(400).json({ error: 'Invalid Bet Amount' });
+
+  if (won) {
+    const totalReturn = numBet + numProfit;
+    const updatedUser = await User.findOneAndUpdate(
+      { username },
+      { $inc: { balance: numProfit, totalWon: numProfit, totalBetPlaced: numBet } },
+      { new: true }
+    );
+    if (!updatedUser) return res.status(404).json({ error: 'User not found' });
+    return res.json({ success: true, newBalance: updatedUser.balance });
+  } else {
+    const updatedUser = await User.findOneAndUpdate(
+      { username, balance: { $gte: numBet } },
+      { $inc: { balance: -numBet, totalLost: numBet, totalBetPlaced: numBet } },
+      { new: true }
+    );
+    if (!updatedUser) return res.status(400).json({ error: 'Insufficient Balance' });
+    return res.json({ success: true, newBalance: updatedUser.balance });
+  }
 });
 
 // ==========================================
@@ -244,11 +269,11 @@ app.get('/', (req, res) => {
     }
     .popup-anim { animation: popIn 0.35s cubic-bezier(0.175, 0.885, 0.32, 1.275) forwards; }
 
-    @keyframes expandPage {
-      0% { transform: scale(0.1) rotate(-15deg); opacity: 0; }
-      100% { transform: scale(1) rotate(0deg); opacity: 1; }
+    @keyframes fadeInAnim {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
     }
-    .animate-expand { animation: expandPage 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+    .animate-fadeIn { animation: fadeInAnim 0.4s ease-out forwards; }
   </style>
 </head>
 <body class="h-full w-full flex items-center justify-center p-0 md:p-4">
@@ -337,116 +362,162 @@ app.get('/', (req, res) => {
       predictionTimer: 0,
       pulseRadius: 0,
 
-      // CAREERBOOT STATE
+      // --- CAREERBOOT STATE ---
       careerboot: {
-        stage: 'WHEEL', // WHEEL, LESSON, MCQ
-        selectedSlice: null,
-        spinning: false,
         wheelAngle: 0,
-        round: 1, // 1, 2, 3
-        questionIndex: 0,
-        activeQuestions: [],
-        accumulatedMultiplier: 0
+        isSpinning: false,
+        selectedSliceIndex: null,
+        subView: 'wheel', // 'wheel' | 'lesson' | 'mcq'
+        round: 1,         // 1, 2, 3
+        qIndex: 0,        // 0..4
+        totalWinningsMultiplier: 0,
+        usedQuestionIds: []
       }
     };
 
-    const CAREERBOOT_DATA = {
-      'Grammar': {
-        color: '#dc2626',
-        lesson: \`Grammar forms the structural foundation of professional communication. Master subject-verb agreement (e.g., "The list of items is ready"), appropriate tense consistency, and structural parallelisms. Avoid common errors like dangling modifiers ("Walking to the store, the rain started") and misusing possessive pronouns ("its" vs "it's"). Professional writing demands structural accuracy to convey authority and executive clarity in corporate reporting.\`,
-        mcqs: [
-          // Round 1
-          { q: "Identify the correctly punctuated sentence.", opts: ["The manager, and supervisor agreed.", "The manager and supervisor agreed.", "The manager, and supervisor, agreed.", "The manager and supervisor, agreed."], a: 1 },
-          { q: "Which word correctly completes: 'Neither of the applicants ___ qualified.'", opts: ["are", "is", "were", "have"], a: 1 },
-          { q: "Choose the sentence with correct subject-verb agreement.", opts: ["Data shows great progress.", "The team are winning.", "A group of experts is presenting.", "Both is arriving today."], a: 2 },
-          { q: "Which phrase contains a dangling modifier?", opts: ["Having finished the report, the computer crashed.", "After completing the audit, she left.", "To succeed, practice daily.", "While reviewing numbers, we saw mistakes."], a: 0 },
-          { q: "Select the correct pronoun: 'Give the file to John and ___.'", opts: ["myself", "I", "me", "himself"], a: 2 },
-          // Round 2
-          { q: "Identify the correct usage of 'its' or 'it's'.", opts: ["Its time to start.", "The company updated it's policy.", "The bird lost its feather.", "It's tail was wagging."], a: 2 },
-          { q: "Which sentence displays parallel structure?", opts: ["He likes hiking, swimming, and to ride bikes.", "She enjoys reading, writing, and editing.", "They learned planning, executing, and to review.", "We prefer speaking, listening, and write."], a: 1 },
-          { q: "Identify the passive voice construction.", opts: ["The analyst compiled the dashboard.", "The report was finalized by the committee.", "We resolved the audit queries.", "She presented the revenue projection."], a: 1 },
-          { q: "Which word is a conjunction?", opts: ["Quickly", "Although", "Efficiency", "Under"], a: 1 },
-          { q: "Find the error: 'He is more smarter than his peer.'", opts: ["more smarter", "than", "his", "peer"], a: 0 },
-          // Round 3
-          { q: "Which clause is independent?", opts: ["Because revenue rose dramatically", "Although the audit failed", "The quarterly figures exceeded projections", "Since market conditions shifted"], a: 2 },
-          { q: "Choose the correct subjunctive mood usage.", opts: ["If I was the CEO, I would expand.", "If I were the CEO, I would expand.", "If I am the CEO, I will expand.", "If I be the CEO, I expand."], a: 1 },
-          { q: "Select the correct word: 'The policy will ___ all employees.'", opts: ["affect", "effect", "effective", "affection"], a: 0 },
-          { q: "What is an adverb modifying in: 'The exceptionally clear report passed.'?", opts: ["report", "passed", "clear", "The"], a: 2 },
-          { q: "Identify the correct relative pronoun: 'The client ___ account closed.'", opts: ["who", "whom", "whose", "which"], a: 2 }
+    // CAREERBOOT LESSONS & MCQ DATA BANK
+    const CAREERBOOT_DATA = [
+      {
+        id: 'grammar',
+        name: 'Grammar',
+        color: '#b91c1c', // Crimson Red
+        lesson: \`
+          <h3 class="text-lg font-black text-amber-300 mb-2">Mastering English Grammar Rules</h3>
+          <p class="mb-3">Grammar forms the structural foundation of effective business communication. Key rules include Subject-Verb Agreement, proper Tense Usage, and active vs passive voice.</p>
+          <ul class="list-disc list-inside space-y-1 text-amber-100/80 mb-3">
+            <li><b>Subject-Verb Agreement:</b> Singular subjects take singular verbs (e.g., "The manager <i>analyzes</i> reports").</li>
+            <li><b>Parallel Structure:</b> Ensure listed items share matching grammatical forms (e.g., "reading, writing, and speaking").</li>
+            <li><b>Conditional Sentences:</b> Zero, First, Second, and Third conditionals determine logical outcomes based on hypothetical actions.</li>
+          </ul>
+          <p>Mastering these fundamentals eliminates ambiguity, ensuring clarity in executive documentation and corporate proposals.</p>
+        \`,
+        questions: [
+          // Round 1 Questions
+          { id: 'g1', round: 1, q: 'Neither the manager nor the employees ___ present.', opts: ['was', 'were', 'is', 'are being'], answer: 1 },
+          { id: 'g2', round: 1, q: 'Identify the correct sentence:', opts: ['She don’t like tea.', 'She doesn’t likes tea.', 'She doesn’t like tea.', 'She no like tea.'], answer: 2 },
+          { id: 'g3', round: 1, q: 'Choose the correct preposition: "He is proficient ___ Excel."', opts: ['at', 'in', 'with', 'on'], answer: 1 },
+          { id: 'g4', round: 1, q: 'Which is a passive voice sentence?', opts: ['I wrote the report.', 'The report was written by me.', 'I am writing reports.', 'Write the report.'], answer: 1 },
+          { id: 'g5', round: 1, q: 'Select the correctly spelled word:', opts: ['Accomodate', 'Accommodate', 'Acommodate', 'Accommodat'], answer: 1 },
+          // Round 2 Questions
+          { id: 'g6', round: 2, q: 'Had I known the truth, I ___ you immediately.', opts: ['will tell', 'would tell', 'would have told', 'have told'], answer: 2 },
+          { id: 'g7', round: 2, q: 'Choose the correct idiom: "To hit the nail on the ___"', opts: ['finger', 'head', 'wall', 'foot'], answer: 1 },
+          { id: 'g8', round: 2, q: 'Which pronoun is correct? "Between you and ___."', opts: ['I', 'me', 'myself', 'he'], answer: 1 },
+          { id: 'g9', round: 2, q: 'Identify the adverbal phrase: "He ran with great speed."', opts: ['He ran', 'with great speed', 'great speed', 'ran with'], answer: 1 },
+          { id: 'g10', round: 2, q: 'Choose the sentence with correct parallel structure:', opts: ['He likes cooking, to swim, and reading.', 'He likes cooking, swimming, and reading.', 'He likes cook, swim, and read.', 'He likes to cook, swimming, and read.'], answer: 1 },
+          // Round 3 Questions
+          { id: 'g11', round: 3, q: 'What type of clause is underlined? "The candidate *who scored highest* won."', opts: ['Noun Clause', 'Adjective Clause', 'Adverb Clause', 'Prepositional Clause'], answer: 1 },
+          { id: 'g12', round: 3, q: 'Which sentence uses a subjunctive mood correctly?', opts: ['If I was you, I would leave.', 'If I were you, I would leave.', 'If I am you, I would leave.', 'If I be you, I would leave.'], answer: 1 },
+          { id: 'g13', round: 3, q: 'Choose the correct antonym for "Meticulous":', opts: ['Careful', 'Sloppy', 'Thorough', 'Precise'], answer: 1 },
+          { id: 'g14', round: 3, q: 'Identify the dangling modifier: "Walking into the office, the lights went off."', opts: ['Walking into the office', 'the lights went off', 'into the office', 'lights went'], answer: 0 },
+          { id: 'g15', round: 3, q: 'Select the correct reported speech: He said, "I am busy."', opts: ['He said he is busy.', 'He said that he was busy.', 'He said he will be busy.', 'He says he was busy.'], answer: 1 }
         ]
       },
-      'Vocabulary': {
-        color: '#2563eb',
-        lesson: \`Corporate vocabulary enhances your business influence and persuasiveness. Essential terms include "Synergy" (combined interaction producing greater combined impact), "Mitigate" (make less severe), "Pivot" (strategic change in direction), and "ROI" (Return on Investment). Precision in vocabulary eliminates ambiguity in stakeholder presentations, allowing technical insights to be translated seamlessly into commercial strategies.\`,
-        mcqs: [
-          // Round 1
-          { q: "What does 'Mitigate' mean?", opts: ["Increase severity", "Lessen or reduce harm", "Duplicate records", "Delay execution"], a: 1 },
-          { q: "Choose the synonym for 'Synergy'.", opts: ["Isolation", "Combined effectiveness", "Conflict", "Division"], a: 1 },
-          { q: "What is the meaning of 'Pivot' in business?", opts: ["Close operations", "Maintain current strategy", "Strategic change in course", "File for bankruptcy"], a: 2 },
-          { q: "Define 'Feasible'.", opts: ["Impossible to execute", "Possible and practical", "Expensive", "Theoretical only"], a: 1 },
-          { q: "What does 'Paradigm' refer to?", opts: ["A standard pattern or model", "A financial loss", "A software bug", "A short break"], a: 0 },
-          // Round 2
-          { q: "Select the antonym of 'Transparent'.", opts: ["Clear", "Opaque", "Honest", "Lucid"], a: 1 },
-          { q: "What is 'Benchmark'?", opts: ["A wooden chair", "A standard of excellence for comparison", "A temporary error", "A final invoice"], a: 1 },
-          { q: "Choose the meaning of 'Consensus'.", opts: ["General agreement", "Disagreement", "Voting tie", "Individual verdict"], a: 0 },
-          { q: "Define 'Disruptive' in corporate innovation.", opts: ["Annoying colleagues", "Radically altering an industry", "Failing audits", "Slowing down workflow"], a: 1 },
-          { q: "What does 'Leverage' mean in strategy?", opts: ["Use to maximum advantage", "Give up control", "Borrow cash only", "Reduce workforce"], a: 0 },
-          // Round 3
-          { q: "What does 'Scalable' signify?", opts: ["Fixed capacity", "Capable of growing without structure collapse", "Shrinking market", "Manual processing"], a: 1 },
-          { q: "Select the definition of 'Discrepancy'.", opts: ["Perfect match", "Inconsistency or difference", "Legal clause", "Financial gain"], a: 1 },
-          { q: "What does 'Fiduciary' relate to?", opts: ["Trust and financial responsibility", "Marketing campaigns", "Software design", "Warehouse logistics"], a: 0 },
-          { q: "Choose the synonym for 'Pragmatic'.", opts: ["Idealistic", "Practical", "Careless", "Theoretical"], a: 1 },
-          { q: "Define 'Bottleneck'.", opts: ["Point of congestion or delay", "Packaging type", "Smooth pipeline", "Rapid acceleration"], a: 0 }
+      {
+        id: 'vocabulary',
+        name: 'Vocabulary',
+        color: '#047857', // Emerald Green
+        lesson: \`
+          <h3 class="text-lg font-black text-amber-300 mb-2">Executive Business Vocabulary</h3>
+          <p class="mb-3">Expanding high-impact vocabulary empowers professionals to articulate complex strategic concepts clearly and persuasively during meetings and evaluations.</p>
+          <ul class="list-disc list-inside space-y-1 text-amber-100/80 mb-3">
+            <li><b>Synergy:</b> Combined action producing a total effect greater than the sum of individual contributions.</li>
+            <li><b>Benchmark:</b> Standard or point of reference against which things may be compared.</li>
+            <li><b>Mitigate:</b> Make less severe, serious, or painful.</li>
+          </ul>
+          <p>Contextual mastery of precise corporate terminology builds credibility and drives effective leadership communication.</p>
+        \`,
+        questions: [
+          // Round 1 Questions
+          { id: 'v1', round: 1, q: 'What does "Mitigate" mean?', opts: ['Increase risk', 'Lessen severity', 'Ignore problems', 'Delay action'], answer: 1 },
+          { id: 'v2', round: 1, q: 'Synonym of "Candid":', opts: ['Secretive', 'Honest', 'Deceptive', 'Shy'], answer: 1 },
+          { id: 'v3', round: 1, q: 'What is a "Benchmark"?', opts: ['A wooden chair', 'A standard reference', 'A financial penalty', 'A marketing banner'], answer: 1 },
+          { id: 'v4', round: 1, q: 'Antonym of "Expand":', opts: ['Grow', 'Enlarge', 'Contract', 'Stretch'], answer: 2 },
+          { id: 'v5', round: 1, q: 'Meaning of "Lucrative":', opts: ['Unprofitable', 'Highly profitable', 'Risky', 'Complicated'], answer: 1 },
+          // Round 2 Questions
+          { id: 'v6', round: 2, q: 'Select the synonym for "Pragmatic":', opts: ['Theoretical', 'Practical', 'Unrealistic', 'Emotional'], answer: 1 },
+          { id: 'v7', round: 2, q: 'What does "Bottleneck" refer to in business processes?', opts: ['A type of glass', 'A point of congestion', 'A fast pipeline', 'A celebratory event'], answer: 1 },
+          { id: 'v8', round: 2, q: 'Antonym of "Obsolete":', opts: ['Outdated', 'Modern', 'Ancient', 'Useless'], answer: 1 },
+          { id: 'v9', round: 2, q: 'What does "Synergy" mean?', opts: ['Conflict', 'Combined cooperative effort', 'Isolation', 'Competition'], answer: 1 },
+          { id: 'v10', round: 2, q: 'Choose the word closest in meaning to "Resilient":', opts: ['Fragile', 'Adaptable & Tough', 'Rigid', 'Weak'], answer: 1 },
+          // Round 3 Questions
+          { id: 'v11', round: 3, q: 'What does "Ubiquitous" mean?', opts: ['Rare', 'Present everywhere', 'Unique', 'Temporary'], answer: 1 },
+          { id: 'v12', round: 3, q: 'Synonym for "Fastidious":', opts: ['Careless', 'Meticulous', 'Lazy', 'Hasty'], answer: 1 },
+          { id: 'v13', round: 3, q: 'Antonym of "Epitome":', opts: ['Essence', 'Poorest example', 'Model', 'Embodiment'], answer: 1 },
+          { id: 'v14', round: 3, q: 'Meaning of "Ephemerality":', opts: ['Permanence', 'Short-lived nature', 'Gigantic size', 'Deep wisdom'], answer: 1 },
+          { id: 'v15', round: 3, q: 'What is "Disparate"?', opts: ['Similar', 'Essentially different', 'Equal', 'Identical'], answer: 1 }
         ]
       },
-      'MS Excel': {
-        color: '#059669',
-        lesson: \`MS Excel is the core engine for data operations and reporting in modern retail and corporate management. Key tools include VLOOKUP/XLOOKUP for cross-table referencing, Pivot Tables for rapid multi-dimensional aggregation, and conditional logic functions like SUMIFS, COUNTIFS, and INDEX/MATCH. Master absolute ($A$1) versus relative cell references to maintain data integrity across multi-tab financial dashboards.\`,
-        mcqs: [
-          // Round 1
-          { q: "Which formula searches for a value in the leftmost column of a table?", opts: ["XLOOKUP", "VLOOKUP", "HLOOKUP", "INDEX"], a: 1 },
-          { q: "What symbol freezes cell references in Excel (Absolute Reference)?", opts: ["#", "$", "%", "&"], a: 1 },
-          { q: "Which feature rapidly summarizes large sets of operational data?", opts: ["Data Validation", "Pivot Table", "Conditional Formatting", "Goal Seek"], a: 1 },
-          { q: "What does #N/A mean in Excel?", opts: ["Value not available", "Number overflow", "Column width small", "Division by zero"], a: 0 },
-          { q: "Which function counts cells that meet specific criteria?", opts: ["COUNT", "COUNTA", "COUNTIF", "SUMIF"], a: 2 },
-          // Round 2
-          { q: "How do you combine text from multiple cells in Excel?", opts: ["MERGE()", "CONCATENATE() / TEXTJOIN()", "ADD()", "JOIN.TEXT()"], a: 1 },
-          { q: "Which shortcut locks or cycles cell reference modes ($)?", opts: ["F2", "F4", "F9", "F11"], a: 1 },
-          { q: "What is the result of =IF(5>3, 'Yes', 'No')?", opts: ["No", "Yes", "TRUE", "ERROR"], a: 1 },
-          { q: "Which function replaces VLOOKUP with modern flexibility?", opts: ["LOOKUPNOW", "XLOOKUP", "SUPERLOOKUP", "MATCHV"], a: 1 },
-          { q: "What does the INDEX & MATCH combination replace?", opts: ["SUMIFS", "VLOOKUP limitation of leftward lookup", "Pivot Tables", "Macros"], a: 1 },
-          // Round 3
-          { q: "Which Excel feature isolates specific rows based on criteria?", opts: ["Sort", "Filter", "Consolidate", "Group"], a: 1 },
-          { q: "How do you strip extra trailing/leading spaces from text?", opts: ["CLEAN()", "TRIM()", "REMOVE()", "CROP()"], a: 1 },
-          { q: "Which formula calculates average based on multiple criteria?", opts: ["AVERAGEIF", "AVERAGEIFS", "SUMIFS", "COUNTIFS"], a: 1 },
-          { q: "What error indicates division by 0?", opts: ["#VALUE!", "#REF!", "#DIV/0!", "#NUM!"], a: 2 },
-          { q: "What does CTRL + Z do in Excel?", opts: ["Redo action", "Undo action", "Select all", "Save file"], a: 1 }
+      {
+        id: 'excel',
+        name: 'MS Excel',
+        color: '#1d4ed8', // Royal Blue
+        lesson: \`
+          <h3 class="text-lg font-black text-amber-300 mb-2">Mastering Microsoft Excel & Data Operations</h3>
+          <p class="mb-3">MS Excel is indispensable for data management, financial modeling, and store audit tracking. Core tools include formulas, lookup functions, and Pivot Tables.</p>
+          <ul class="list-disc list-inside space-y-1 text-amber-100/80 mb-3">
+            <li><b>VLOOKUP / XLOOKUP:</b> Search values vertically across rows to retrieve matching data from specified columns.</li>
+            <li><b>INDEX-MATCH:</b> Dynamic combination offering flexible non-contiguous lookup capabilities.</li>
+            <li><b>Pivot Tables:</b> Rapidly summarize, analyze, explore, and present large multi-variable datasets.</li>
+          </ul>
+          <p>Proficiency in keyboard shortcuts (e.g., ALT + = for AutoSum) dramatically increases operational efficiency.</p>
+        \`,
+        questions: [
+          // Round 1 Questions
+          { id: 'e1', round: 1, q: 'Which formula calculates the total sum of a range?', opts: ['=COUNT()', '=SUM()', '=TOTAL()', '=AVERAGE()'], answer: 1 },
+          { id: 'e2', round: 1, q: 'Shortcut key to AutoSum selected cells:', opts: ['CTRL + S', 'ALT + =', 'CTRL + A', 'SHIFT + SUM'], answer: 1 },
+          { id: 'e3', round: 1, q: 'Which symbol begins any formula in Excel?', opts: ['@', '#', '=', '$'], answer: 2 },
+          { id: 'e4', round: 1, q: 'Which key locks cell references in a formula (e.g., $A$1)?', opts: ['F2', 'F4', 'F9', 'F12'], answer: 1 },
+          { id: 'e5', round: 1, q: 'What does VLOOKUP stand for?', opts: ['Variable Lookup', 'Vertical Lookup', 'Vector Lookup', 'Value Lookup'], answer: 1 },
+          // Round 2 Questions
+          { id: 'e6', round: 2, q: 'Which function joins text from multiple cells together?', opts: ['=CONCATENATE()', '=JOIN()', '=MERGE()', '=SUMTEXT()'], answer: 0 },
+          { id: 'e7', round: 2, q: 'What is the main advantage of XLOOKUP over VLOOKUP?', opts: ['Faster calculation only', 'Look up values to the left', 'Uses fewer parameters always', 'Works without numbers'], answer: 1 },
+          { id: 'e8', round: 2, q: 'Which function counts non-empty cells in a range?', opts: ['=COUNT()', '=COUNTA()', '=COUNTBLANK()', '=SUMIF()'], answer: 1 },
+          { id: 'e9', round: 2, q: 'What error appears when a formula divides by zero?', opts: ['#N/A', '#VALUE!', '#DIV/0!', '#REF!'], answer: 2 },
+          { id: 'e10', round: 2, q: 'Which tool summarizes massive datasets instantly?', opts: ['Data Validation', 'Pivot Table', 'Conditional Formatting', 'Goal Seek'], answer: 1 },
+          // Round 3 Questions
+          { id: 'e11', round: 3, q: 'Which array formula combination replaces VLOOKUP flexibly?', opts: ['SUM-IF', 'INDEX-MATCH', 'COUNT-IF', 'OFFSET-NOW'], answer: 1 },
+          { id: 'e12', round: 3, q: 'What does the IF ERROR formula do?', opts: ['Highlights errors in red', 'Returns custom value if error occurs', 'Deletes error rows', 'Calculates standard deviation'], answer: 1 },
+          { id: 'e13', round: 3, q: 'Which Excel function returns the rank of a number in a list?', opts: ['=RANK()', '=ORDER()', '=SORT()', '=LEVEL()'], answer: 0 },
+          { id: 'e14', round: 3, q: 'What is the shortcut to open the Format Cells dialog box?', opts: ['CTRL + Shift + F', 'CTRL + 1', 'ALT + F1', 'CTRL + F4'], answer: 1 },
+          { id: 'e15', round: 3, q: 'In Power Query, what operation unpivots columns into attribute-value pairs?', opts: ['Group By', 'Unpivot Columns', 'Transpose', 'Merge Queries'], answer: 1 }
         ]
       },
-      'Business analytics': {
-        color: '#d97706',
-        lesson: \`Business Analytics bridges raw datasets and commercial strategy. It leverages descriptive analytics (what happened), diagnostic analytics (why it happened), predictive analytics (what will happen), and prescriptive analytics (how to make it happen). Key performance indicators (KPIs) such as customer acquisition cost (CAC), lifetime value (LTV), churn rate, and net promoter score (NPS) guide executive decision-making.\`,
-        mcqs: [
-          // Round 1
-          { q: "What type of analytics explains 'What happened in the past'?", opts: ["Predictive", "Descriptive", "Prescriptive", "Diagnostic"], a: 1 },
-          { q: "What does KPI stand for?", opts: ["Key Process Integration", "Key Performance Indicator", "Known Program Insight", "Key Profit Index"], a: 1 },
-          { q: "What metric tracks customer turnover/loss rate?", opts: ["Churn Rate", "Bounce Rate", "Retention Index", "LTV"], a: 0 },
-          { q: "What does LTV stand for in customer analytics?", opts: ["Long Term Value", "Lifetime Value", "Last Transaction Valuation", "Lead Total Value"], a: 1 },
-          { q: "Which analytics type suggests actions to take?", opts: ["Descriptive", "Diagnostic", "Predictive", "Prescriptive"], a: 3 },
-          // Round 2
-          { q: "What is A/B Testing?", opts: ["Testing two versions to see which performs better", "Auditing financials twice", "Backing up databases A and B", "Comparing 2 employees"], a: 0 },
-          { q: "What does CAC stand for?", opts: ["Customer Acquisition Cost", "Company Audit Capital", "Current Asset Calculation", "Cost Analytics Center"], a: 0 },
-          { q: "What does a correlation value of +1 indicate?", opts: ["No relationship", "Perfect inverse relationship", "Perfect positive linear relationship", "Data error"], a: 2 },
-          { q: "What is data cleaning?", opts: ["Deleting all database rows", "Fixing corrupt/inaccurate data records", "Formatting fonts", "Exporting to PDF"], a: 1 },
-          { q: "Which metric measures customer willingness to recommend?", opts: ["ROI", "NPS (Net Promoter Score)", "CTR", "CPM"], a: 1 },
-          { q: "What is an outlier in a dataset?", opts: ["The average value", "A data point significantly different from others", "The median value", "A missing value"], a: 1 },
-          { q: "What does Data Mining involve?", opts: ["Physical hardware extraction", "Discovering patterns in large datasets", "Writing SQL queries only", "Deleting old logs"], a: 1 },
-          { q: "What chart type best shows trends over time?", opts: ["Pie Chart", "Line Chart", "Scatter Plot", "Gauge Chart"], a: 1 },
-          { q: "Define 'Cohort Analysis'.", opts: ["Analyzing groups with shared characteristics over time", "Comparing two companies", "Calculating daily tax", "Surveying staff"], a: 0 },
-          { q: "What does ROI stand for?", opts: ["Return on Investment", "Rate of Inflation", "Risk of Insolvency", "Revenue on Operations"], a: 0 }
+      {
+        id: 'analytics',
+        name: 'Business analytics',
+        color: '#7c3aed', // Purple
+        lesson: \`
+          <h3 class="text-lg font-black text-amber-300 mb-2">Business Analytics Essentials</h3>
+          <p class="mb-3">Business analytics transforms raw operational data into actionable strategic insights, helping leadership optimize profitability, logistics, and store sales performance.</p>
+          <ul class="list-disc list-inside space-y-1 text-amber-100/80 mb-3">
+            <li><b>Descriptive Analytics:</b> Evaluates historical performance (What happened?).</li>
+            <li><b>Predictive Analytics:</b> Utilizes statistical modeling to forecast trends (What might happen?).</li>
+            <li><b>Prescriptive Analytics:</b> Recommends targeted business decisions (What action should be taken?).</li>
+          </ul>
+          <p>Tracking Key Performance Indicators (KPIs) like Customer Lifetime Value (CLV) and ROI guarantees data-driven profitability.</p>
+        \`,
+        questions: [
+          // Round 1 Questions
+          { id: 'ba1', round: 1, q: 'What type of analytics answers "What happened in the past"?', opts: ['Predictive', 'Descriptive', 'Prescriptive', 'Diagnostic'], answer: 1 },
+          { id: 'ba2', round: 1, q: 'What does KPI stand for in business analytics?', opts: ['Key Performance Indicator', 'Known Process Index', 'Key Profit Margin', 'Knowledge Process Integration'], answer: 0 },
+          { id: 'ba3', round: 1, q: 'Which chart best displays continuous data trends over time?', opts: ['Pie Chart', 'Line Chart', 'Scatter Plot', 'Donut Chart'], answer: 1 },
+          { id: 'ba4', round: 1, q: 'What does ROI stand for?', opts: ['Rate of Inflation', 'Return on Investment', 'Risk of Insolvency', 'Return on Income'], answer: 1 },
+          { id: 'ba5', round: 1, q: 'Which metric measures the percentage of visitors who make a purchase?', opts: ['Bounce Rate', 'Conversion Rate', 'Click-Through Rate', 'Retention Rate'], answer: 1 },
+          // Round 2 Questions
+          { id: 'ba6', round: 2, q: 'Predictive Analytics relies heavily on which method?', opts: ['Historical Audits', 'Statistical Modeling & Machine Learning', 'Manual Counting', 'Rule of Thumb'], answer: 1 },
+          { id: 'ba7', round: 2, q: 'What is a metric that measures customer attrition called?', opts: ['Churn Rate', 'Growth Rate', 'NPS', 'CAC'], answer: 0 },
+          { id: 'ba8', round: 2, q: 'What does A/B Testing compare?', opts: ['Two random datasets', 'Two versions of a product/webpage', 'Auditors vs Buyers', 'Annual budget plans'], answer: 1 },
+          { id: 'ba9', round: 2, q: 'In data analytics, what is an "Outlier"?', opts: ['The average value', 'An observation far removed from others', 'A missing row', 'A duplicated record'], answer: 1 },
+          { id: 'ba10', round: 2, q: 'What does CLV stand for?', opts: ['Customer Lifetime Value', 'Corporate Lease Volume', 'Current Liabilities Variable', 'Cost Line Visibility'], answer: 0 },
+          // Round 3 Questions
+          { id: 'ba11', round: 3, q: 'Which type of analytics recommends optimal decisions?', opts: ['Descriptive', 'Diagnostic', 'Prescriptive', 'Predictive'], answer: 2 },
+          { id: 'ba12', round: 3, q: 'What statistical measure indicates the strength of a linear relationship between two variables?', opts: ['Variance', 'Correlation Coefficient', 'Standard Error', 'Median'], answer: 1 },
+          { id: 'ba13', round: 3, q: 'What is ETL in data warehousing?', opts: ['Extract, Transform, Load', 'Enter, Test, Launch', 'Evaluate, Track, Log', 'Export, Transfer, Leverage'], answer: 0 },
+          { id: 'ba14', round: 3, q: 'In Cohort Analysis, how are users grouped?', opts: ['By random selection', 'By shared characteristics over a timeframe', 'By salary level', 'By alphabet'], answer: 1 },
+          { id: 'ba15', round: 3, q: 'What does a P-value < 0.05 signify in statistical hypothesis testing?', opts: ['Inconclusive data', 'Statistical significance', 'High error margin', 'Zero correlation'], answer: 1 }
         ]
       }
-    };
+    ];
 
     function switchView(targetView) {
       if (['lobby', 'login', 'admin', 'pwchange'].includes(targetView)) {
@@ -774,99 +845,100 @@ app.get('/', (req, res) => {
     }
 
     // --- GAME 4: CAREERBOOT ENGINE ---
-    function renderCareerBootWheelCanvas() {
+    function drawCareerbootWheel() {
       const cvs = document.getElementById('cb-wheel-canvas');
-      if (!cvs) return;
+      if(!cvs) return;
       const ctx = cvs.getContext('2d');
-      const w = cvs.width = cvs.clientWidth;
-      const h = cvs.height = cvs.clientHeight;
-      const r = Math.min(w, h) / 2 - 10;
-      const cx = w / 2;
-      const cy = h / 2;
+      const size = cvs.width = cvs.height = cvs.clientWidth;
+      const center = size / 2;
+      const radius = center - 10;
+      const sliceAngle = (2 * Math.PI) / 4;
 
-      ctx.clearRect(0, 0, w, h);
+      ctx.clearRect(0, 0, size, size);
 
-      const slices = Object.keys(CAREERBOOT_DATA);
-      const arc = (Math.PI * 2) / slices.length;
+      for (let i = 0; i < 4; i++) {
+        const start = state.careerboot.wheelAngle + (i * sliceAngle);
+        const end = start + sliceAngle;
 
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.rotate(state.careerboot.wheelAngle);
-
-      slices.forEach((sliceKey, i) => {
-        const sliceAngle = i * arc;
         ctx.beginPath();
-        ctx.fillStyle = CAREERBOOT_DATA[sliceKey].color;
-        ctx.moveTo(0, 0);
-        ctx.arc(0, 0, r, sliceAngle, sliceAngle + arc);
-        ctx.lineTo(0, 0);
+        ctx.moveTo(center, center);
+        ctx.arc(center, center, radius, start, end);
+        ctx.closePath();
+
+        ctx.fillStyle = CAREERBOOT_DATA[i].color;
         ctx.fill();
         ctx.strokeStyle = '#d4af37';
         ctx.lineWidth = 3;
         ctx.stroke();
 
+        // Label Text Drawing
         ctx.save();
-        ctx.rotate(sliceAngle + arc / 2);
+        ctx.translate(center, center);
+        ctx.rotate(start + sliceAngle / 2);
         ctx.textAlign = 'right';
         ctx.fillStyle = '#ffffff';
-        ctx.font = 'bold 12px sans-serif';
+        ctx.font = 'bold 13px sans-serif';
         ctx.shadowColor = '#000000';
         ctx.shadowBlur = 4;
-        ctx.fillText(sliceKey.toUpperCase(), r - 15, 4);
+        ctx.fillText(CAREERBOOT_DATA[i].name, radius - 20, 5);
         ctx.restore();
-      });
+      }
 
-      ctx.restore();
-
-      // Pin Needle Pointer at top
-      ctx.fillStyle = '#fcf6ba';
+      // Center Hub Pin
       ctx.beginPath();
-      ctx.moveTo(cx - 12, cy - r - 4);
-      ctx.lineTo(cx + 12, cy - r - 4);
-      ctx.lineTo(cx, cy - r + 18);
+      ctx.arc(center, center, 22, 0, 2 * Math.PI);
+      ctx.fillStyle = '#120303';
       ctx.fill();
-      ctx.strokeStyle = '#800a0a';
-      ctx.lineWidth = 2;
+      ctx.strokeStyle = '#d4af37';
+      ctx.lineWidth = 4;
       ctx.stroke();
+
+      ctx.fillStyle = '#fcf6ba';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('SPIN', center, center + 3);
     }
 
-    async function spinCareerBootWheel() {
+    function spinCareerbootWheel() {
       sound.init();
-      if (state.user.balance < state.userBet) return showPopup("Insufficient Balance!", "OK");
-      if (state.careerboot.spinning) return;
+      if(state.user.balance < state.userBet) return showPopup("Insufficient Balance!", "OK");
+      if(state.careerboot.isSpinning) return;
 
-      state.careerboot.spinning = true;
-      const slices = Object.keys(CAREERBOOT_DATA);
-      const chosenIndex = Math.floor(Math.random() * slices.length);
-      const chosenSlice = slices[chosenIndex];
+      state.careerboot.isSpinning = true;
+      const selectedIndex = Math.floor(Math.random() * 4);
+      state.careerboot.selectedSliceIndex = selectedIndex;
 
-      const arc = (Math.PI * 2) / slices.length;
-      const targetSliceCenter = chosenIndex * arc + (arc / 2);
-      let targetAngle = (Math.PI * 1.5) - targetSliceCenter;
-      if (targetAngle < 0) targetAngle += Math.PI * 2;
+      const sliceAngle = (2 * Math.PI) / 4;
+      // Target Pointer is fixed at top (3*PI/2)
+      const targetSliceCenter = (selectedIndex * sliceAngle) + (sliceAngle / 2);
+      const targetAngleInRotation = (1.5 * Math.PI) - targetSliceCenter;
+      
+      const extraRounds = (4 + Math.floor(Math.random() * 3)) * (2 * Math.PI);
+      const currentMod = state.careerboot.wheelAngle % (2 * Math.PI);
+      const finalAngle = state.careerboot.wheelAngle + extraRounds + (targetAngleInRotation - currentMod);
 
-      const totalSpins = 5 * Math.PI * 2;
-      const finalAngle = state.careerboot.wheelAngle + totalSpins + targetAngle - (state.careerboot.wheelAngle % (Math.PI * 2));
+      const duration = 3500;
+      const startAngle = state.careerboot.wheelAngle;
+      const startTime = performance.now();
 
-      let startTime = null;
-      const duration = 3000;
+      function animateSpin(now) {
+        const elapsed = now - startTime;
+        const progress = Math.min(elapsed / duration, 1);
+        const easeOut = 1 - Math.pow(1 - progress, 3);
 
-      function animateSpin(timestamp) {
-        if (!startTime) startTime = timestamp;
-        let elapsed = timestamp - startTime;
-        let progress = Math.min(elapsed / duration, 1);
-        let easeOut = 1 - Math.pow(1 - progress, 3);
-
-        state.careerboot.wheelAngle = easeOut * finalAngle;
-        sound.playCoinFlip();
-        renderCareerBootWheelCanvas();
+        state.careerboot.wheelAngle = startAngle + (finalAngle - startAngle) * easeOut;
+        drawCareerbootWheel();
 
         if (progress < 1) {
           requestAnimationFrame(animateSpin);
         } else {
-          state.careerboot.spinning = false;
-          state.careerboot.selectedSlice = chosenSlice;
-          state.careerboot.stage = 'LESSON';
+          state.careerboot.isSpinning = false;
+          state.careerboot.subView = 'lesson';
+          state.careerboot.round = 1;
+          state.careerboot.qIndex = 0;
+          state.careerboot.totalWinningsMultiplier = 0;
+          state.careerboot.usedQuestionIds = [];
+          sound.playWin();
           render();
         }
       }
@@ -874,64 +946,69 @@ app.get('/', (req, res) => {
       requestAnimationFrame(animateSpin);
     }
 
-    function startCareerBootMCQs() {
-      const sliceObj = CAREERBOOT_DATA[state.careerboot.selectedSlice];
-      state.careerboot.round = 1;
-      state.careerboot.questionIndex = 0;
-      state.careerboot.accumulatedMultiplier = 0;
-      state.careerboot.activeQuestions = [...sliceObj.mcqs];
-      state.careerboot.stage = 'MCQ';
-      render();
+    function getNextCareerbootQuestion() {
+      const slice = CAREERBOOT_DATA[state.careerboot.selectedSliceIndex];
+      const available = slice.questions.filter(q => q.round === state.careerboot.round && !state.careerboot.usedQuestionIds.includes(q.id));
+      if (available.length === 0) return slice.questions.find(q => q.round === state.careerboot.round);
+      const q = available[Math.floor(Math.random() * available.length)];
+      state.careerboot.usedQuestionIds.push(q.id);
+      return q;
     }
 
-    async function handleCareerBootAnswer(selectedOptIndex) {
-      const currentRound = state.careerboot.round;
-      const qIdx = (currentRound - 1) * 5 + state.careerboot.questionIndex;
-      const currentQ = state.careerboot.activeQuestions[qIdx];
+    async function handleCareerbootAnswer(selectedOptionIndex) {
+      sound.init();
+      const slice = CAREERBOOT_DATA[state.careerboot.selectedSliceIndex];
+      const currentQ = slice.questions.find(q => q.id === state.careerboot.currentQId);
 
-      if (selectedOptIndex === currentQ.a) {
+      // Round Multipliers: Round 1 (+1.40x), Round 2 (+1.60x), Round 3 (+2.00x)
+      const roundMultipliers = { 1: 1.40, 2: 1.60, 3: 2.00 };
+
+      if (selectedOptionIndex === currentQ.answer) {
         sound.playWin();
-        const roundMult = currentRound === 1 ? 1.40 : (currentRound === 2 ? 1.60 : 2.00);
-        state.careerboot.accumulatedMultiplier += roundMult;
+        const gainedX = roundMultipliers[state.careerboot.round];
+        state.careerboot.totalWinningsMultiplier += gainedX;
 
-        if (state.careerboot.questionIndex < 4) {
-          state.careerboot.questionIndex++;
+        // Advance Question / Round
+        if (state.careerboot.qIndex < 4) {
+          state.careerboot.qIndex++;
+          render();
         } else {
-          if (currentRound < 3) {
+          // Finished 5 Questions of current round
+          if (state.careerboot.round < 3) {
             state.careerboot.round++;
-            state.careerboot.questionIndex = 0;
-            showPopup(\`ROUND \${currentRound} COMPLETED! Next Round Multiplier Unlocked!`, 'Continue');
+            state.careerboot.qIndex = 0;
+            showPopup(\`ROUND \${state.careerboot.round - 1} PASSED! Moving to Round \${state.careerboot.round}!\`, 'Next Round');
           } else {
             // ALL 3 ROUNDS COMPLETED (VICTORY)
-            const finalMult = state.careerboot.accumulatedMultiplier;
-            const res = await fetch('/api/play-instant', {
+            const netProfit = state.userBet * state.careerboot.totalWinningsMultiplier;
+            const res = await fetch('/api/careerboot/settle', {
               method: 'POST', headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ username: state.user.username, game: 'careerboot', betAmount: state.userBet, choice: { won: true, multiplier: finalMult } })
+              body: JSON.stringify({ username: state.user.username, betAmount: state.userBet, won: true, netProfit })
             });
             const data = await res.json();
-            if (res.ok) state.user.balance = data.newBalance;
+            if(res.ok) state.user.balance = data.newBalance;
 
-            sound.playWin();
-            showPopup(\`ALL ROUNDS PASSED! Total Multiplier \${finalMult.toFixed(2)}x! WON ₹\${(state.userBet * finalMult).toFixed(2)}!\`, 'Paisa hi Paisa', () => {
-              state.careerboot.stage = 'WHEEL';
+            showPopup(\`VICTORY! Completed All 3 Rounds! Total Multiplier Accumulated: +\${state.careerboot.totalWinningsMultiplier.toFixed(2)}x. Net Profit: ₹\${netProfit.toFixed(2)}\`, 'Back to Wheel', () => {
+              state.careerboot.subView = 'wheel';
+              render();
             });
           }
         }
       } else {
         // WRONG ANSWER -> LOSS
         sound.playLoss();
-        const res = await fetch('/api/play-instant', {
+        const res = await fetch('/api/careerboot/settle', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username: state.user.username, game: 'careerboot', betAmount: state.userBet, choice: { won: false, multiplier: 0 } })
+          body: JSON.stringify({ username: state.user.username, betAmount: state.userBet, won: false, netProfit: 0 })
         });
         const data = await res.json();
-        if (res.ok) state.user.balance = data.newBalance;
+        if(res.ok) state.user.balance = data.newBalance;
 
-        showPopup(\`WRONG ANSWER! YOU LOST ₹\${state.userBet}. Select bet amount and try again!`, 'Bet Again', () => {
-          state.careerboot.stage = 'WHEEL';
+        showPopup(\`WRONG ANSWER! You lost ₹\${state.userBet}. Bet again to retry!`, 'Bet Again', () => {
+          state.careerboot.subView = 'wheel';
+          render();
         });
       }
-      render();
     }
 
     // Live Market Price Generator
@@ -1137,7 +1214,7 @@ app.get('/', (req, res) => {
             </div>
             <div class="flex-1 p-4 grid grid-cols-2 gap-4 overflow-y-auto">
               \${[
-                { id: 'careerboot', name: 'CareerBoot', icon: '🎓', desc: 'Wheel & MCQ Rounds' },
+                { id: 'careerboot', name: 'CareerBoot', icon: '🎓', desc: 'Spin, Learn & Win' },
                 { id: 'aviator', name: 'Aviator', icon: '🚀', desc: 'Realtime Multiplier' },
                 { id: 'guesscorrect', name: 'Guess Correct', icon: '🎲', desc: 'Big vs Small Dice' },
                 { id: 'prediction', name: 'Prediction', icon: '📈', desc: 'Live Market Line' }
@@ -1156,84 +1233,104 @@ app.get('/', (req, res) => {
       }
 
       else if (state.currentView === 'careerboot') {
-        const cb = state.careerboot;
-        if (cb.stage === 'WHEEL') {
-          html = \`
-            <div class="h-full w-full flex flex-col bg-[#120303]">
-              <div class="h-14 px-3 bg-red-950 border-b border-amber-500/40 flex items-center justify-between">
-                <button onclick="switchView('lobby')" class="px-3 py-1 bg-red-900 border border-amber-500/40 rounded-xl text-xs font-bold text-white">Lobby</button>
-                <span class="font-black gold-text">CAREERBOOT WHEEL</span>
-                <span class="font-mono text-sm text-green-400 font-bold">₹\${state.user.balance.toFixed(2)}</span>
-              </div>
-              <div class="flex-1 flex flex-col items-center justify-center p-4 space-y-4">
-                <div class="relative w-72 h-72 flex items-center justify-center">
-                  <canvas id="cb-wheel-canvas" class="w-full h-full"></canvas>
-                </div>
-                \${renderBetControllerUI()}
-                <button onclick="spinCareerBootWheel()" \${cb.spinning ? 'disabled' : ''} class="w-full max-w-xs h-14 rounded-2xl font-black text-xl tracking-wider gold-gradient text-black shadow-xl active:scale-95 transition-all">
-                  \${cb.spinning ? 'SPINNING...' : 'SPIN THE WHEEL 🎡'}
-                </button>
-              </div>
-            </div>
-          \`;
-        } else if (cb.stage === 'LESSON') {
-          const sliceData = CAREERBOOT_DATA[cb.selectedSlice];
-          html = \`
-            <div class="h-full w-full flex flex-col bg-[#120303] animate-expand">
-              <div class="h-14 px-3 bg-red-950 border-b border-amber-500/40 flex items-center justify-between shrink-0">
-                <button onclick="state.careerboot.stage='WHEEL'; render();" class="px-3 py-1 bg-red-900 border border-amber-500/40 rounded-xl text-xs font-bold text-white">Wheel</button>
-                <span class="font-black gold-text uppercase">\${cb.selectedSlice} MODULE</span>
-                <span class="font-mono text-sm text-green-400 font-bold">₹\${state.user.balance.toFixed(2)}</span>
-              </div>
-              <div class="flex-1 p-5 overflow-y-auto space-y-4">
-                <div class="tomato-card p-6 rounded-3xl space-y-3">
-                  <div class="flex items-center gap-2">
-                    <span class="text-2xl">📘</span>
-                    <h2 class="text-xl font-black text-amber-300 uppercase">\${cb.selectedSlice} Comprehensive Lesson</h2>
-                  </div>
-                  <p class="text-sm text-amber-100/90 leading-relaxed text-justify font-sans">
-                    \${sliceData.lesson}
-                  </p>
-                </div>
-              </div>
-              <div class="p-4 bg-red-950 border-t border-amber-500/40 shrink-0 flex justify-center">
-                <button onclick="startCareerBootMCQs()" class="w-full max-w-xs h-14 rounded-2xl font-black text-lg gold-gradient text-black shadow-xl active:scale-95">
-                  START MCQ QUIZ 🚀
-                </button>
-              </div>
-            </div>
-          \`;
-        } else if (cb.stage === 'MCQ') {
-          const qIdx = (cb.round - 1) * 5 + cb.questionIndex;
-          const qObj = cb.activeQuestions[qIdx];
-          const roundMultText = cb.round === 1 ? '+1.40x' : (cb.round === 2 ? '+1.60x' : '+2.00x');
+        let contentHtml = '';
 
-          html = \`
-            <div class="h-full w-full flex flex-col bg-[#120303]">
-              <div class="h-14 px-3 bg-red-950 border-b border-amber-500/40 flex items-center justify-between shrink-0">
-                <span class="text-xs font-bold text-amber-300">ROUND \${cb.round}/3</span>
-                <span class="font-black gold-text uppercase">\${cb.selectedSlice}</span>
-                <span class="text-xs font-mono font-bold text-green-400">MULT: \${roundMultText}</span>
+        // SUBVIEW 1: WHEEL PAGE
+        if (state.careerboot.subView === 'wheel') {
+          contentHtml = \`
+            <div class="flex-1 flex flex-col items-center justify-between p-4 space-y-4 overflow-y-auto">
+              <div class="text-center space-y-1">
+                <h2 class="text-xl font-black gold-text">SPIN THE CAREER WHEEL</h2>
+                <p class="text-[11px] text-amber-200/70">Set your bet, spin the slice & unlock lessons + MCQ rewards!</p>
               </div>
-              <div class="p-3 bg-black/40 border-b border-amber-500/20 flex justify-between items-center shrink-0">
-                <span class="text-xs text-amber-200/70 font-semibold">Question \${cb.questionIndex + 1} of 5</span>
-                <span class="text-xs font-mono text-amber-300 font-bold">ACCUMULATED: \${cb.accumulatedMultiplier.toFixed(2)}x</span>
+
+              <!-- Canvas Wheel Container -->
+              <div class="relative w-64 h-64 flex items-center justify-center my-2">
+                <!-- Top Wheel Pointer -->
+                <div class="absolute -top-3 left-1/2 -translate-x-1/2 z-20 text-red-500 font-black text-2xl drop-shadow-lg">▼</div>
+                <canvas id="cb-wheel-canvas" class="w-full h-full rounded-full shadow-2xl border-4 border-amber-500/50"></canvas>
               </div>
-              <div class="flex-1 p-5 flex flex-col justify-between overflow-y-auto">
-                <div class="tomato-card p-6 rounded-3xl space-y-4">
-                  <h3 class="text-base font-bold text-amber-300 leading-snug">\${qObj.q}</h3>
+
+              \${renderBetControllerUI()}
+
+              <button onclick="spinCareerbootWheel()" \${state.careerboot.isSpinning ? 'disabled' : ''} class="w-full max-w-xs h-14 gold-gradient text-black font-black text-xl tracking-wider rounded-2xl shadow-xl active:scale-95 transition-all">
+                \${state.careerboot.isSpinning ? 'SPINNING...' : 'SPIN WHEEL 🎲'}
+              </button>
+            </div>
+          \`;
+        }
+
+        // SUBVIEW 2: LESSON PAGE
+        else if (state.careerboot.subView === 'lesson') {
+          const slice = CAREERBOOT_DATA[state.careerboot.selectedSliceIndex];
+          contentHtml = \`
+            <div class="flex-1 flex flex-col justify-between p-4 space-y-4 overflow-y-auto animate-fadeIn">
+              <div class="tomato-card p-5 rounded-3xl space-y-3 border-2 border-amber-400">
+                <div class="flex items-center justify-between border-b border-amber-500/30 pb-2">
+                  <span class="text-xs font-bold text-amber-300 uppercase tracking-widest">LESSON TOPIC</span>
+                  <span class="px-2.5 py-0.5 text-xs font-black rounded-full bg-amber-400 text-black">\${slice.name}</span>
                 </div>
-                <div class="space-y-3 my-4">
-                  \${qObj.opts.map((opt, idx) => \`
-                    <button onclick="handleCareerBootAnswer(\${idx})" class="w-full p-4 rounded-2xl bg-black/70 border border-amber-500/40 text-left text-sm font-semibold text-white active:bg-amber-500 active:text-black transition-all shadow-md">
-                      <span class="text-amber-400 font-black mr-2">\${['A','B','C','D'][idx]}.</span> \${opt}
+                <div class="text-xs text-amber-100 leading-relaxed max-h-72 overflow-y-auto pr-1">
+                  \${slice.lesson}
+                </div>
+              </div>
+
+              <button onclick="state.careerboot.subView='mcq'; render();" class="w-full h-14 bg-gradient-to-r from-emerald-600 to-emerald-800 border-2 border-emerald-400 text-white font-black text-xl rounded-2xl shadow-xl active:scale-95 tracking-wide">
+                START MCQ 🚀
+              </button>
+            </div>
+          \`;
+        }
+
+        // SUBVIEW 3: MCQ ROUNDS PAGE
+        else if (state.careerboot.subView === 'mcq') {
+          const q = getNextCareerbootQuestion();
+          state.careerboot.currentQId = q.id;
+
+          const roundMultipliers = { 1: '+1.40x', 2: '+1.60x', 3: '+2.00x' };
+
+          contentHtml = \`
+            <div class="flex-1 flex flex-col justify-between p-4 space-y-4 overflow-y-auto animate-fadeIn">
+              <!-- Progress Header -->
+              <div class="flex items-center justify-between bg-black/70 p-3 rounded-2xl border border-amber-500/40 text-xs">
+                <div class="font-bold text-amber-300">ROUND \${state.careerboot.round} / 3</div>
+                <div class="font-mono text-green-400 font-bold">REWARD: \${roundMultipliers[state.careerboot.round]}</div>
+                <div class="font-bold text-amber-200">Q \${state.careerboot.qIndex + 1} / 5</div>
+              </div>
+
+              <!-- Question Card -->
+              <div class="tomato-card p-5 rounded-3xl space-y-4">
+                <div class="text-sm font-black text-amber-200 leading-snug">
+                  \${q.q}
+                </div>
+                <div class="space-y-2.5">
+                  \${q.opts.map((opt, idx) => \`
+                    <button onclick="handleCareerbootAnswer(\${idx})" class="w-full p-3.5 bg-black/60 border border-amber-500/40 hover:border-amber-400 rounded-xl text-left text-xs text-white font-medium active:scale-98 transition-all flex items-center gap-3">
+                      <span class="w-6 h-6 rounded-full bg-amber-500/20 text-amber-300 flex items-center justify-center font-bold shrink-0">\${String.fromCharCode(65 + idx)}</span>
+                      <span>\${opt}</span>
                     </button>
                   \`).join('')}
                 </div>
               </div>
+
+              <!-- Accumulated Multiplier Info Footer -->
+              <div class="text-center text-[11px] font-bold text-amber-300/80 bg-black/40 py-2 rounded-xl border border-amber-500/20">
+                Accumulated Profit Multiplier: <span class="text-green-400 font-mono">+\${state.careerboot.totalWinningsMultiplier.toFixed(2)}x</span>
+              </div>
             </div>
           \`;
         }
+
+        html = \`
+          <div class="h-full w-full flex flex-col bg-[#120303]">
+            <div class="h-14 px-3 bg-red-950 border-b border-amber-500/40 flex items-center justify-between shrink-0">
+              <button onclick="switchView('lobby')" class="px-3 py-1 bg-red-900 border border-amber-500/40 rounded-xl text-xs font-bold text-white">Lobby</button>
+              <span class="font-black gold-text tracking-wider">CAREERBOOT 🎓</span>
+              <span class="font-mono text-sm text-green-400 font-bold">₹\${state.user.balance.toFixed(2)}</span>
+            </div>
+            \${contentHtml}
+          </div>
+        \`;
       }
 
       else if (state.currentView === 'pwchange') {
@@ -1426,7 +1523,7 @@ app.get('/', (req, res) => {
 
       if(state.currentView === 'aviator') renderAviatorOverlay();
       if(state.currentView === 'prediction') renderPredictionGraph();
-      if(state.currentView === 'careerboot' && state.careerboot.stage === 'WHEEL') renderCareerBootWheelCanvas();
+      if(state.currentView === 'careerboot' && state.careerboot.subView === 'wheel') drawCareerbootWheel();
     }
 
     async function createPlayer() {
